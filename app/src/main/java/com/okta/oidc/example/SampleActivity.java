@@ -16,6 +16,12 @@
 package com.okta.oidc.example;
 
 import android.annotation.SuppressLint;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
@@ -31,8 +37,14 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.browser.customtabs.CustomTabsCallback;
+import androidx.browser.customtabs.CustomTabsClient;
+import androidx.browser.customtabs.CustomTabsService;
+import androidx.browser.customtabs.CustomTabsServiceConnection;
+import androidx.browser.customtabs.CustomTabsSession;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentTransaction;
+import androidx.browser.customtabs.CustomTabsIntent;
 
 import com.google.android.material.textfield.TextInputEditText;
 import com.okta.authn.sdk.AuthenticationException;
@@ -59,7 +71,14 @@ import com.okta.oidc.storage.security.DefaultEncryptionManager;
 import com.okta.oidc.util.AuthorizationException;
 
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
 import java.security.GeneralSecurityException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -75,6 +94,12 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
     private static final String TAG = "SampleActivity";
     private static final String PREF_SWITCH = "switch";
     private static final String PREF_NON_WEB = "nonweb";
+
+    protected Set<String> mSupportedBrowsers = new LinkedHashSet<>();
+
+    private static final String CHROME_STABLE = "com.android.chrome";
+    private static final String CHROME_SYSTEM = "com.google.android.apps.chrome";
+    private static final String CHROME_BETA = "com.android.chrome.beta";
     /**
      * Authorization client using chrome custom tab as a user agent.
      */
@@ -148,6 +173,7 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         Log.d(TAG, "onCreate");
+        mSupportedBrowsers.addAll(Arrays.asList(CHROME_STABLE, CHROME_SYSTEM, CHROME_BETA));
         super.onCreate(savedInstanceState);
 
         setContentView(R.layout.sample_activity);
@@ -406,20 +432,16 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
                 .create();
 
         //Example of config
-        mOidcConfig = new OIDCConfig.Builder()
-                .clientId(BuildConfig.CLIENT_ID)
-                .redirectUri(BuildConfig.REDIRECT_URI)
-                .endSessionRedirectUri(BuildConfig.END_SESSION_URI)
-                .scopes(BuildConfig.SCOPES)
-                .discoveryUri(BuildConfig.DISCOVERY_URI)
-                .create();
+        //mOidcConfig = new OIDCConfig.Builder()
+        //        .clientId(BuildConfig.CLIENT_ID)
+        //        .redirectUri(BuildConfig.REDIRECT_URI)
+        //        .endSessionRedirectUri(BuildConfig.END_SESSION_URI)
+        //        .scopes(BuildConfig.SCOPES)
+        //        .discoveryUri(BuildConfig.DISCOVERY_URI)
+        //        .create();
 
         mOAuth2Config = new OIDCConfig.Builder()
-                .clientId(BuildConfig.CLIENT_ID)
-                .redirectUri(BuildConfig.REDIRECT_URI)
-                .endSessionRedirectUri(BuildConfig.END_SESSION_URI)
-                .scopes(BuildConfig.SCOPES)
-                .discoveryUri(BuildConfig.DISCOVERY_URI + "/oauth2/default")
+                .withJsonFile(this, R.raw.okta_oidc_config)
                 .create();
 
         //use custom connection factory
@@ -481,6 +503,17 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
         setupCallback();
     }
 
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Log.d(TAG, "got info from redirect " + intent.getData().getQuery());
+        //String sessionToken = intent.getData().getQueryParameter("sessionToken");
+        //this.onSignIn(sessionToken);
+
+        setIntent(intent);
+
+    }
+
     /**
      * Sets callback.
      */
@@ -535,7 +568,17 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
         super.onResume();
         if (mWebAuth.isInProgress()) {
             showNetworkProgress(true);
+        } else {
+            Intent intent = getIntent();
+            Log.d(TAG, "processing activity result");
+            if(intent != null && intent.getData() != null) {
+                String sessionToken = intent.getData().getQueryParameter("sessionToken");
+                if (sessionToken != null) {
+                    this.onSignIn(sessionToken);
+                }
+            }
         }
+
     }
 
     @Override
@@ -619,6 +662,51 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
         });
     }
 
+    private void launchTab(Context context, Uri uri){
+        final CustomTabsServiceConnection connection = new CustomTabsServiceConnection() {
+            @Override
+            public void onCustomTabsServiceConnected(ComponentName componentName, CustomTabsClient client) {
+                CustomTabsSession session = client.newSession(new CustomTabsCallback());
+                session.mayLaunchUrl(uri, null, null);
+                final CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder(session);
+
+                builder.enableUrlBarHiding();
+                final CustomTabsIntent intent = builder.build();
+                intent.intent.setPackage(getBrowser());
+                client.warmup(0L); // This prevents backgrounding after redirection
+                intent.launchUrl(context, uri);
+            }
+            @Override
+            public void onServiceDisconnected(ComponentName name) {}
+        };
+        CustomTabsClient.bindCustomTabsService(context, "com.android.chrome", connection);
+    }
+
+    protected String getBrowser() {
+        PackageManager pm = getPackageManager();
+        Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.example.com"));
+        List<ResolveInfo> resolveInfoList = pm.queryIntentActivities(browserIntent, 0);
+        List<String> customTabsBrowsers = new ArrayList<>();
+        for (ResolveInfo info : resolveInfoList) {
+            Intent serviceIntent = new Intent();
+            serviceIntent.setAction(CustomTabsService.ACTION_CUSTOM_TABS_CONNECTION);
+            serviceIntent.setPackage(info.activityInfo.packageName);
+            if (pm.resolveService(serviceIntent, 0) != null) {
+                customTabsBrowsers.add(info.activityInfo.packageName);
+            }
+        }
+        for (String browser : mSupportedBrowsers) {
+            if (customTabsBrowsers.contains(browser)) {
+                return browser;
+            }
+        }
+        //Use first compatible browser on list.
+        if (!customTabsBrowsers.isEmpty()) {
+            return customTabsBrowsers.get(0);
+        }
+        return null;
+    }
+
     @Override
     public void onSignIn(String username, String password) {
         mSignInDialog.dismiss();
@@ -637,8 +725,27 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
                             @Override
                             public void handleUnknown(
                                     AuthenticationResponse authenticationResponse) {
+                                Log.i(TAG, "state token = " + authenticationResponse.getStateToken());
+                                // Use a CustomTabsIntent.Builder to configure CustomTabsIntent.
+                                String query = "";
+                                try {
+                                    query = URLEncoder.encode("http://com.okta.example/callback", "utf-8");
+                                } catch (UnsupportedEncodingException e) {
+                                    e.printStackTrace();
+                                }
+                                String url = "https://login.mywittslab.com?stateToken="
+                                        +authenticationResponse.getStateToken()
+                                        +"&fromURI="+query+"&fromMobile=true";
+                                launchTab(getApplicationContext(), Uri.parse(url));
+                                //CustomTabsIntent.Builder builder = new CustomTabsIntent.Builder();
+                                // set toolbar color and/or setting custom actions before invoking build()
+                                // Once ready, call CustomTabsIntent.Builder.build() to create a CustomTabsIntent
+                                //CustomTabsIntent customTabsIntent = builder.build();
+                                // and launch the desired Url with CustomTabsIntent.launchUrl()
+                                //customTabsIntent.launchUrl(getApplicationContext(), Uri.parse(url));
                                 SampleActivity.this.runOnUiThread(() -> {
                                     showNetworkProgress(false);
+                                    Log.i(TAG, "Handle MFA");
                                     mTvStatus.setText(authenticationResponse.getStatus().name());
                                 });
                             }
@@ -652,8 +759,12 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
                             }
 
                             @Override
-                            public void handleSuccess(AuthenticationResponse successResponse) {
+                            public void
+
+                            handleSuccess(AuthenticationResponse successResponse) {
+
                                 String sessionToken = successResponse.getSessionToken();
+                                Log.e(TAG, "Session Token = " + sessionToken);
                                 mAuthClient.signIn(sessionToken, mPayload,
                                         new RequestCallback<Result,
                                                 AuthorizationException>() {
@@ -681,6 +792,45 @@ public class SampleActivity extends AppCompatActivity implements SignInDialog.Si
                     mTvStatus.setText(e.getMessage());
                 });
             }
+        });
+    }
+
+    public void onSignIn(String sessionToken) {
+        Log.d(TAG, "Session Token = " + sessionToken);
+        /*
+        If the redirect service is not used then we need to just start the authorize flow
+
+        WebAuthClient client = getWebAuthClient();
+        String loginHint = mEditText.getEditableText().toString();
+        if (!TextUtils.isEmpty(loginHint)) {
+            mPayload = new AuthenticationPayload.Builder()
+                    .setLoginHint(loginHint)
+                    .build();
+        }
+        client.signIn(this, mPayload);
+        */
+
+        mExecutor.submit(() -> {
+            mAuthClient.signIn(sessionToken, mPayload,
+                    new RequestCallback<Result,
+                            AuthorizationException>() {
+                        @Override
+                        public void onSuccess(
+                                @NonNull Result result) {
+                            Log.d(TAG, "attempting to authenticate");
+                            mTvStatus.setText("authentication authorized");
+                            mIsSessionSignIn = true;
+                            showAuthenticatedMode();
+                            showNetworkProgress(false);
+                        }
+
+                        @Override
+                        public void onError(String error,
+                                            AuthorizationException exception) {
+                            Log.e(TAG, error, exception);
+                            mTvStatus.setText(error);
+                        }
+                    });
         });
     }
 

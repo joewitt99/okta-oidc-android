@@ -35,7 +35,7 @@ android {
         // Make sure this is consistent with the redirect URI used in
         // res/raw/okta_oidc_config
         manifestPlaceholders = [
-                "appAuthRedirectScheme": manifestScheme
+                "appAuthRedirectScheme": "com.example.basiclogin.test"
         ]
     }
 
@@ -54,6 +54,9 @@ dependencies {
     implementation 'androidx.annotation:annotation:' + rootProject.androidxLibVersion
     implementation 'androidx.appcompat:appcompat:' + rootProject.androidxLibVersion
     implementation 'androidx.security:security-crypto:' + rootProject.securityVersion
+    implementation "androidx.browser:browser:${rootProject.browserVersion}"
+    implementation "androidx.fragment:fragment:${rootProject.androidxLibVersion}"
+    implementation "androidx.core:core:${rootProject.androidxLibVersion}"
 
     implementation "com.google.android.material:material:1.0.0"
     implementation 'androidx.biometric:biometric:1.0.0'

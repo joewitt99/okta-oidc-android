@@ -1,11 +1,11 @@
 {
-  "client_id": "{clientId}",
-  "redirect_uri": "{redirectUri}",
-  "end_session_redirect_uri": "{endSessionUri}",
+  "client_id": "0oaofu0ucqCRbSbyw0h7",
+  "redirect_uri": "com.example.basiclogin.test:/callback",
+  "end_session_redirect_uri": "com.example.basiclogin.test:/logout",
   "scopes": [
     "openid",
     "profile",
     "offline_access"
   ],
-  "discovery_uri": "https://{yourOktaDomain}"
+  "discovery_uri": "https://login.mywittslab.com"
 }
